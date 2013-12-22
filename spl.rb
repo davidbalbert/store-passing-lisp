@@ -11,10 +11,8 @@ module SPL
     def self.make(bindings = {}, outer_env = nil, store = EmptyStore.instance)
       starting_location = store.next_location
 
-      locations_names_and_values = Hash[bindings.map.with_index {|(name, value), i| [i + starting_location, [name, value]]}]
-
-      locations = Hash[locations_names_and_values.map { |loc, (name, value)| [name, loc] }]
-      values = Hash[locations_names_and_values.map { |loc, (name, value)| [loc, value] }]
+      locations = Hash[bindings.keys.map.with_index {|name, i| [name, i + starting_location]}]
+      values = Hash[bindings.values.map.with_index {|value, i| [i + starting_location, value]}]
 
       env = Environment.new(locations, outer_env)
       new_store = values.reduce(store) { |store, (location, value)| Store.new(location, value, store) }
@@ -190,10 +188,6 @@ module SPL
       new_env, new_store = Environment.make(bindings, outer_env, store)
 
       [Interpreter.new(global_env, new_store), new_env]
-    end
-
-    def with_new_store(store)
-      Interpreter.new(global_env, store)
     end
 
     def def(name, value)
