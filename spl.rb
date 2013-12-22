@@ -221,6 +221,10 @@ module SPL
           check_special_form_args(expr, 1)
 
           [self, expr.second]
+        when "quasiquote"
+          check_special_form_args(expr, 1)
+
+          process_unquotes(expr.second, local_env, local_store)
         when "lambda"
           check_special_form_args(expr, 2..-1)
           arg_names = expr.second
@@ -248,6 +252,41 @@ module SPL
         else
           raise EvalError, "#{expr.car} is not callable"
         end
+      end
+    end
+
+  protected
+    def process_unquotes(expr, local_env, local_store)
+      case expr
+      when List
+        case expr.first
+        when "unquote"
+          raise EvalError, "`unquote' takes one argument" unless expr.size == 2
+          eval(expr.second, local_env, local_store)
+        else
+          interp = self
+          processed_exprs = expr.to_a.reduce([]) do |array, ex|
+            if ex.is_a?(List) && ex.first == "unquote-splicing"
+              raise EvalError, "`unquote-splicing' takes one argument" unless ex.size == 2
+
+              interp, processed = interp.eval(ex.second, local_env, local_store)
+
+              unless processed.is_a?(List) || processed.is_a?(EmptyList)
+                raise EvalError, "`unquote-splicing' must take a list"
+              end
+
+              array + processed
+            else
+              interp, processed = interp.process_unquotes(ex, local_env, local_store)
+
+              array << processed
+            end
+          end
+
+          [interp, List.build(processed_exprs)]
+        end
+      else
+        [self, expr]
       end
     end
 
@@ -321,6 +360,7 @@ module SPL
     def to_a
       [car] + cdr.to_a
     end
+    alias to_ary to_a
 
     def to_s
       "(#{to_a.join(" ")})"
@@ -367,7 +407,13 @@ module SPL
         s += gets
       end while s.strip.empty? || parens_are_unbalanced?(s)
 
-      tokens = s.gsub('(', ' ( ').gsub(')', ' ) ').gsub('\'', ' \' ').split
+      tokens = s.gsub('(', ' ( ').
+        gsub(')', ' ) ').
+        gsub('\'', ' \' ').
+        gsub('`', ' ` ').
+        gsub(',@', ' ,@ ').
+        gsub(/,([^@])/) {" , #{$1}"}.
+        split
 
       forms = []
       until tokens.empty?
@@ -393,6 +439,12 @@ module SPL
         List.build(l)
       elsif token == '\''
         List.build(["quote", read_tokens(tokens)])
+      elsif token == '`'
+        List.build(["quasiquote", read_tokens(tokens)])
+      elsif token == ','
+        List.build(["unquote", read_tokens(tokens)])
+      elsif token == ',@'
+        List.build(["unquote-splicing", read_tokens(tokens)])
       elsif token.to_i.to_s == token
         token.to_i
       else
