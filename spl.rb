@@ -174,6 +174,8 @@ module SPL
           "nil" => EmptyList.instance,
           "car" => lambda { |interp, l| [interp, l.car] },
           "cdr" => lambda { |interp, l| [interp, l.cdr] },
+          "cons" => lambda { |interp, car, cdr| [interp, List.new(car, cdr)] },
+          "list" => lambda { |interp, *args| [interp, List.build(args)] },
           "+" => lambda { |interp, *args| [interp, args.reduce(:+)] }
         })
       else
