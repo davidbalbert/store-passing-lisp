@@ -177,64 +177,66 @@ module SPL
     end
 
     def def(name, value)
-      Interpreter.new(*env.def(name, value, global_store))
+      Interpreter.new(*global_env.def(name, value, global_store))
     end
 
-    def eval(form, local_env = nil, local_store = EmptyStore.instance)
-      case form
+    def eval(expr, local_env = nil, local_store = EmptyStore.instance)
+      case expr
       when String
-        [self, get(form, local_env, local_store)]
+        [self, get(expr, local_env, local_store)]
       when Integer
-        [self, form]
+        [self, expr]
       when EmptyList
-        [self, form]
+        [self, expr]
       when List
-        case form.car
+        case expr.car
         when "def"
-          check_special_form_args(form, 2)
-          name = form.cdr.car
-          interp, value = eval(form.cdr.cdr.car, local_env, local_store)
+          check_special_form_args(expr, 2)
+          name = expr.second
+          interp, value = eval(expr.third, local_env, local_store)
           interp = interp.def(name, value)
 
           [interp, name]
         when "if"
-          check_special_form_args(form, 3)
+          check_special_form_args(expr, 3)
 
-          interp, predicate = eval(form.cdr.car, local_env, local_store)
+          interp, predicate = eval(expr.second, local_env, local_store)
 
           if predicate != EmptyList.instance
-            interp.eval(form.cdr.cdr.car, local_env, local_store)
+            interp.eval(expr.third, local_env, local_store)
           else
-            interp.eval(form.cdr.cdr.cdr.car, local_env, local_store)
+            interp.eval(expr.fourth, local_env, local_store)
           end
         when "quote"
-          check_special_form_args(form, 1)
+          check_special_form_args(expr, 1)
 
-          [self, form.cdr.car]
+          [self, expr.second]
         when "lambda"
-          check_special_form_args(form, 2..-1)
-          arg_names = form.cdr.car
+          check_special_form_args(expr, 2..-1)
+          arg_names = expr.second
 
           raise EvalError, "arglist #{arg_names} must be a list" unless arg_names.is_a?(List) || arg_names.is_a?(EmptyList)
 
-          bodies = form.cdr.cdr
+          bodies = expr.drop(2)
 
           [self, Function.new(arg_names, bodies, local_env, local_store)]
         when String, List
-          interp, val = eval(form.car, local_env, local_store)
+          interp, val = eval(expr.car, local_env, local_store)
 
-          interp.eval(List.new(val, form.cdr), local_env, local_store)
+          interp.eval(List.new(val, expr.cdr), local_env, local_store)
         when Proc, Function
           interp = self
-          evaled_args = form.cdr.to_a.map do |arg|
+          args = expr.rest
+
+          evaled_args = args.to_a.map do |arg|
             interp, arg = interp.eval(arg, local_env, local_store)
 
             arg
           end
 
-          form.car.call(self, *evaled_args)
+          expr.car.call(self, *evaled_args)
         else
-          raise EvalError, "#{form.car} is not callable"
+          raise EvalError, "#{expr.car} is not callable"
         end
       end
     end
@@ -248,19 +250,19 @@ module SPL
       end
     end
 
-    def check_special_form_args(form, expected_argc)
-      argc = form.size - 1
+    def check_special_form_args(expr, expected_argc)
+      argc = expr.size - 1
 
       case expected_argc
       when Integer
         unless argc == expected_argc
-          raise EvalError, "`#{form.car}' takes #{expected_argc} arguments"
+          raise EvalError, "`#{expr.car}' takes #{expected_argc} arguments"
         end
       when Range
         if expected_argc.end == -1 && expected_argc.begin > argc
-          raise EvalError, "`#{form.car}' needs at least #{expected_argc.begin} arguments"
+          raise EvalError, "`#{expr.car}' needs at least #{expected_argc.begin} arguments"
         elsif expected_argc.end != -1 && !expected_argc.include?(argc)
-          raise EvalError, "`#{form.car}' takes #{expected_argc} arguments"
+          raise EvalError, "`#{expr.car}' takes #{expected_argc} arguments"
         end
       end
     end
@@ -283,6 +285,29 @@ module SPL
       @size = cdr.size + 1
     end
 
+    alias first car
+    alias rest cdr
+
+    def drop(n)
+      if n == 0
+        self
+      else
+        cdr.drop(n - 1)
+      end
+    end
+
+    def second
+      cdr.first
+    end
+
+    def third
+      cdr.second
+    end
+
+    def fourth
+      cdr.third
+    end
+
     def to_a
       [car] + cdr.to_a
     end
@@ -302,6 +327,12 @@ module SPL
     def cdr
       self
     end
+
+    alias first car
+    alias second car
+    alias third car
+    alias fourth car
+    alias rest cdr
 
     def size
       0
@@ -324,7 +355,7 @@ module SPL
 
       begin
         s += gets
-      end while s.strip.empty? && parens_are_unbalanced?(s)
+      end while s.strip.empty? || parens_are_unbalanced?(s)
 
       tokens = s.gsub('(', ' ( ').gsub(')', ' ) ').split
 
@@ -347,7 +378,7 @@ module SPL
           l << read_tokens(tokens)
         end
 
-        tokens.shift
+        tokens.shift # => ')'
 
         List.build(l)
       elsif token.to_i.to_s == token
