@@ -50,7 +50,7 @@ module SPL
     end
 
     def has_key?(name)
-      locations.has_key?(name) || (outer_env && outer_env.has_key?(name))
+      locations.has_key?(name) || outer_env.has_key?(name)
     end
 
     def [](name)
