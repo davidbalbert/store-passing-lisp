@@ -226,6 +226,7 @@ module SPL
         when "quasiquote"
           check_special_form_args(expr, 1)
 
+          check_unquotes_for_errors(expr.second)
           process_unquotes(expr.second, local_env, local_store)
         when "lambda"
           check_special_form_args(expr, 2..-1)
@@ -258,35 +259,44 @@ module SPL
     end
 
   protected
-    def process_unquotes(expr, local_env, local_store)
-      case expr
-      when List
-        case expr.first
-        when "unquote"
-          raise EvalError, "`unquote' takes one argument" unless expr.size == 2
-          eval(expr.second, local_env, local_store)
-        else
-          interp = self
-          processed_exprs = expr.to_a.reduce([]) do |array, ex|
-            if ex.is_a?(List) && ex.first == "unquote-splicing"
-              raise EvalError, "`unquote-splicing' takes one argument" unless ex.size == 2
-
-              interp, processed = interp.eval(ex.second, local_env, local_store)
-
-              unless processed.is_a?(List) || processed.is_a?(EmptyList)
-                raise EvalError, "`unquote-splicing' must take a list"
-              end
-
-              array + processed
-            else
-              interp, processed = interp.process_unquotes(ex, local_env, local_store)
-
-              array << processed
-            end
+    def check_unquotes_for_errors(expr)
+      if expr.is_a? List
+        expr.to_a.each do |ex|
+          if ex.is_a?(List) && ex.first == "unquote-splicing"
+            raise EvalError, "`unquote-splicing' takes one argument" unless ex.size == 2
+          elsif ex.is_a?(List) && ex.first == "unquote"
+            raise EvalError, "`unquote' takes one argument" unless ex.size == 2
+          else
+            check_unquotes_for_errors(ex)
           end
-
-          [interp, List.build(processed_exprs)]
         end
+      end
+    end
+
+    def process_unquotes(expr, local_env, local_store)
+      if expr.is_a? List
+        interp = self
+        processed_exprs = expr.to_a.reduce([]) do |array, ex|
+          if ex.is_a?(List) && ex.first == "unquote-splicing"
+            interp, processed = interp.eval(ex.second, local_env, local_store)
+
+            unless processed.is_a?(List) || processed.is_a?(EmptyList)
+              raise EvalError, "`unquote-splicing' must take a list"
+            end
+
+            array + processed.to_a
+          elsif ex.is_a?(List) && ex.first == "unquote"
+            interp, processed = interp.eval(ex.second, local_env, local_store)
+
+            array << processed
+          else
+            interp, processed = interp.process_unquotes(ex, local_env, local_store)
+
+            array << processed
+          end
+        end
+
+        [interp, List.build(processed_exprs)]
       else
         [self, expr]
       end
@@ -362,7 +372,6 @@ module SPL
     def to_a
       [car] + cdr.to_a
     end
-    alias to_ary to_a
 
     def to_s
       "(#{to_a.join(" ")})"
@@ -413,8 +422,8 @@ module SPL
         gsub(')', ' ) ').
         gsub('\'', ' \' ').
         gsub('`', ' ` ').
-        gsub(',@', ' ,@ ').
-        gsub(/,([^@])/) {" , #{$1}"}.
+        gsub(',@', ',@ ').
+        gsub(/,([^@])/) {", #{$1}"}.
         split
 
       forms = []
