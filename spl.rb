@@ -176,7 +176,7 @@ module SPL
           "cdr" => lambda { |interp, l| [interp, l.cdr] },
           "cons" => lambda { |interp, car, cdr| [interp, List.new(car, cdr)] },
           "list" => lambda { |interp, *args| [interp, List.build(args)] },
-          "+" => lambda { |interp, *args| [interp, args.reduce(:+)] }
+          "+" => lambda { |interp, *args| [interp, args.reduce(:+) || 0] }
         })
       else
         @global_env, @global_store = global_env, global_store
