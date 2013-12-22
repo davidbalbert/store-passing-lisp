@@ -2,13 +2,28 @@ require 'singleton'
 
 module SPL
   class SPLError < StandardError; end
+  class NameError < SPLError; end
+
+  class NullEnvironment
+    include Singleton
+
+    def make_environment(bindings = {}, store = EmptyStore.instance)
+      Environment.make(bindings, self, store)
+    end
+
+    def has_key?(name)
+      false
+    end
+
+    def [](name)
+      raise NameError, "`#{name}' is unbound"
+    end
+  end
 
   class Environment
-    class NameError < SPLError; end
-
     attr_reader :outer_env, :locations
 
-    def self.make(bindings = {}, outer_env = nil, store = EmptyStore.instance)
+    def self.make(bindings = {}, outer_env = NullEnvironment.instance, store = EmptyStore.instance)
       starting_location = store.next_location
 
       locations = Hash[bindings.keys.map.with_index {|name, i| [name, i + starting_location]}]
@@ -25,6 +40,10 @@ module SPL
       @locations = locations
     end
 
+    def make_environment(bindings = {}, store = EmptyStore.instance)
+      Environment.make(bindings, self, store)
+    end
+
     def def(name, value, store)
       loc = store.next_location
       [Environment.new(locations.merge(name => loc), self), Store.new(loc, value, store)]
@@ -35,13 +54,11 @@ module SPL
     end
 
     def [](name)
-      env = self
-
-      env = env.outer_env until env.nil? || env.locations.has_key?(name)
-
-      raise NameError, "`#{name}' is unbound" if env.nil?
-
-      env.locations[name]
+      if locations.has_key?(name)
+        locations[name]
+      else
+        outer_env[name]
+      end
     end
 
     def to_s
@@ -166,11 +183,13 @@ module SPL
 
     attr_reader :global_env, :store
 
-    def initialize(global_env = nil, store = nil)
-      if global_env.nil?
+    def initialize(global_env = NullEnvironment.instance, store = EmptyStore.instance)
+      @global_env, @store = global_env, store
+
+      if @global_env.is_a? NullEnvironment
         # Don't refer to self in any build in lambdas. They may be used with
         # other instances of Interpreter.
-        @global_env, @store = Environment.make({
+        @global_env, @store = @global_env.make_environment({
           "t" => "t",
           "nil" => EmptyList.instance,
           "car" => lambda { |interp, l| [interp, l.car] },
@@ -179,13 +198,11 @@ module SPL
           "list" => lambda { |interp, *args| [interp, List.build(args)] },
           "+" => lambda { |interp, *args| [interp, args.reduce(0, :+)] }
         })
-      else
-        @global_env, @store = global_env, store
       end
     end
 
     def make_environment(bindings, outer_env)
-      new_env, new_store = Environment.make(bindings, outer_env, store)
+      new_env, new_store = outer_env.make_environment(bindings, store)
 
       [Interpreter.new(global_env, new_store), new_env]
     end
@@ -195,7 +212,7 @@ module SPL
     end
 
     def set!(name, value, local_env)
-      if local_env && local_env.has_key?(name)
+      if local_env.has_key?(name)
         Interpreter.new(global_env, store.set(local_env[name],  value))
       elsif global_env.has_key?(name)
         Interpreter.new(global_env, store.set(global_env[name], value))
@@ -204,7 +221,7 @@ module SPL
       end
     end
 
-    def eval(expr, local_env = nil)
+    def eval(expr, local_env = NullEnvironment.instance)
       case expr
       when String
         [self, get(expr, local_env)]
@@ -330,7 +347,7 @@ module SPL
 
   private
     def get(name, local_env)
-      if local_env && local_env.has_key?(name)
+      if local_env.has_key?(name)
         store[local_env[name]]
       else
         store[global_env[name]]
