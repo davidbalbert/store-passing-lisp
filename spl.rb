@@ -291,7 +291,7 @@ module SPL
     end
 
   private
-    def get(name, local_env = nil, local_store = nil)
+    def get(name, local_env, local_store)
       if local_env && local_env.has_key?(name)
         local_store[local_env[name]]
       else
