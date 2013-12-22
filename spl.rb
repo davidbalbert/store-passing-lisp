@@ -123,12 +123,13 @@ module SPL
 
     attr_reader :arg_names, :argc, :bodies, :env, :store, :name
 
-    def initialize(arg_names, bodies, env, store)
+    def initialize(arg_names, bodies, env, store, name = nil)
       @arg_names = arg_names
       @bodies = bodies.to_a
       @env = env
       @store = store
       @argc = arg_names.size
+      @name = name
     end
 
     def call(interp, *args)
@@ -144,6 +145,10 @@ module SPL
       end.last
 
       [interp, ret]
+    end
+
+    def with_name(name)
+      Function.new(arg_names, bodies, env, store, name)
     end
 
     def to_s
@@ -194,6 +199,11 @@ module SPL
           check_special_form_args(expr, 2)
           name = expr.second
           interp, value = eval(expr.third, local_env, local_store)
+
+          if value.respond_to?(:with_name)
+            value = value.with_name(name)
+          end
+
           interp = interp.def(name, value)
 
           [interp, name]
