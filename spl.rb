@@ -69,6 +69,10 @@ module SPL
       end
     end
 
+    def set(loc, value)
+      Store.new(loc, value, self)
+    end
+
     def next_location
       locations.max + 1
     end
@@ -121,13 +125,12 @@ module SPL
   class Function
     class ArgError < SPLError; end
 
-    attr_reader :arg_names, :argc, :bodies, :env, :store, :name
+    attr_reader :arg_names, :argc, :bodies, :env, :name
 
-    def initialize(arg_names, bodies, env, store, name = nil)
+    def initialize(arg_names, bodies, env, name = nil)
       @arg_names = arg_names
       @bodies = bodies.to_a
       @env = env
-      @store = store
       @argc = arg_names.size
       @name = name
     end
@@ -136,10 +139,10 @@ module SPL
       raise ArgError, "wrong number of arguments (#{args.size} for #{argc})" unless args.size == argc
 
       bindings = Hash[arg_names.to_a.zip(args)]
-      new_env, new_store = Environment.make(bindings, env, store)
+      interp, local_env = interp.make_environment(bindings, env)
 
       ret = bodies.map do |expr|
-        interp, val = interp.eval(expr, new_env, new_store)
+        interp, val = interp.eval(expr, local_env)
 
         val
       end.last
@@ -148,7 +151,7 @@ module SPL
     end
 
     def with_name(name)
-      Function.new(arg_names, bodies, env, store, name)
+      Function.new(arg_names, bodies, env, name)
     end
 
     def to_s
@@ -163,13 +166,13 @@ module SPL
   class Interpreter
     class EvalError < SPLError; end
 
-    attr_reader :global_env, :global_store
+    attr_reader :global_env, :store
 
-    def initialize(global_env = nil, global_store = nil)
+    def initialize(global_env = nil, store = nil)
       if global_env.nil?
         # Don't refer to self in any build in lambdas. They may be used with
         # other instances of Interpreter.
-        @global_env, @global_store = Environment.make({
+        @global_env, @store = Environment.make({
           "t" => "t",
           "nil" => EmptyList.instance,
           "car" => lambda { |interp, l| [interp, l.car] },
@@ -179,18 +182,38 @@ module SPL
           "+" => lambda { |interp, *args| [interp, args.reduce(0, :+)] }
         })
       else
-        @global_env, @global_store = global_env, global_store
+        @global_env, @store = global_env, store
       end
     end
 
-    def def(name, value)
-      Interpreter.new(*global_env.def(name, value, global_store))
+    def make_environment(bindings, outer_env)
+      new_env, new_store = Environment.make(bindings, outer_env, store)
+
+      [Interpreter.new(global_env, new_store), new_env]
     end
 
-    def eval(expr, local_env = nil, local_store = EmptyStore.instance)
+    def with_new_store(store)
+      Interpreter.new(global_env, store)
+    end
+
+    def def(name, value)
+      Interpreter.new(*global_env.def(name, value, store))
+    end
+
+    def set!(name, value, local_env)
+      if local_env && local_env.has_key?(name)
+        Interpreter.new(global_env, store.set(local_env[name],  value))
+      elsif global_env.has_key?(name)
+        Interpreter.new(global_env, store.set(global_env[name], value))
+      else
+        raise EvalError, "cannot `set!' unbound variable `#{name}'"
+      end
+    end
+
+    def eval(expr, local_env = nil)
       case expr
       when String
-        [self, get(expr, local_env, local_store)]
+        [self, get(expr, local_env)]
       when Integer
         [self, expr]
       when EmptyList
@@ -200,7 +223,7 @@ module SPL
         when "def"
           check_special_form_args(expr, 2)
           name = expr.second
-          interp, value = eval(expr.third, local_env, local_store)
+          interp, value = eval(expr.third, local_env)
 
           if value.respond_to?(:with_name)
             value = value.with_name(name)
@@ -209,15 +232,24 @@ module SPL
           interp = interp.def(name, value)
 
           [interp, name]
+        when "set!"
+          check_special_form_args(expr, 2)
+          name = expr.second
+
+          interp, value = eval(expr.third, local_env)
+
+          interp = interp.set!(name, value, local_env)
+
+          [interp, name]
         when "if"
           check_special_form_args(expr, 3)
 
-          interp, predicate = eval(expr.second, local_env, local_store)
+          interp, predicate = eval(expr.second, local_env)
 
           if predicate != EmptyList.instance
-            interp.eval(expr.third, local_env, local_store)
+            interp.eval(expr.third, local_env)
           else
-            interp.eval(expr.fourth, local_env, local_store)
+            interp.eval(expr.fourth, local_env)
           end
         when "quote"
           check_special_form_args(expr, 1)
@@ -227,7 +259,7 @@ module SPL
           check_special_form_args(expr, 1)
 
           check_unquotes_for_errors(expr.second)
-          process_unquotes(expr.second, local_env, local_store)
+          process_unquotes(expr.second, local_env)
         when "lambda"
           check_special_form_args(expr, 2..-1)
           arg_names = expr.second
@@ -236,17 +268,17 @@ module SPL
 
           bodies = expr.drop(2)
 
-          [self, Function.new(arg_names, bodies, local_env, local_store)]
+          [self, Function.new(arg_names, bodies, local_env)]
         when String, List
-          interp, val = eval(expr.car, local_env, local_store)
+          interp, val = eval(expr.car, local_env)
 
-          interp.eval(List.new(val, expr.cdr), local_env, local_store)
+          interp.eval(List.new(val, expr.cdr), local_env)
         when Proc, Function
           interp = self
           args = expr.rest
 
           evaled_args = args.to_a.map do |arg|
-            interp, arg = interp.eval(arg, local_env, local_store)
+            interp, arg = interp.eval(arg, local_env)
 
             arg
           end
@@ -273,12 +305,12 @@ module SPL
       end
     end
 
-    def process_unquotes(expr, local_env, local_store)
+    def process_unquotes(expr, local_env)
       if expr.is_a? List
         interp = self
         processed_exprs = expr.to_a.reduce([]) do |array, ex|
           if ex.is_a?(List) && ex.first == "unquote-splicing"
-            interp, processed = interp.eval(ex.second, local_env, local_store)
+            interp, processed = interp.eval(ex.second, local_env)
 
             unless processed.is_a?(List) || processed.is_a?(EmptyList)
               raise EvalError, "`unquote-splicing' must take a list"
@@ -286,11 +318,11 @@ module SPL
 
             array + processed.to_a
           elsif ex.is_a?(List) && ex.first == "unquote"
-            interp, processed = interp.eval(ex.second, local_env, local_store)
+            interp, processed = interp.eval(ex.second, local_env)
 
             array << processed
           else
-            interp, processed = interp.process_unquotes(ex, local_env, local_store)
+            interp, processed = interp.process_unquotes(ex, local_env)
 
             array << processed
           end
@@ -303,11 +335,11 @@ module SPL
     end
 
   private
-    def get(name, local_env, local_store)
+    def get(name, local_env)
       if local_env && local_env.has_key?(name)
-        local_store[local_env[name]]
+        store[local_env[name]]
       else
-        global_store[global_env[name]]
+        store[global_env[name]]
       end
     end
 
