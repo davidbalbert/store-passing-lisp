@@ -176,7 +176,7 @@ module SPL
           "cdr" => lambda { |interp, l| [interp, l.cdr] },
           "cons" => lambda { |interp, car, cdr| [interp, List.new(car, cdr)] },
           "list" => lambda { |interp, *args| [interp, List.build(args)] },
-          "+" => lambda { |interp, *args| [interp, args.reduce(:+) || 0] }
+          "+" => lambda { |interp, *args| [interp, args.reduce(0, :+)] }
         })
       else
         @global_env, @global_store = global_env, global_store
@@ -418,6 +418,19 @@ module SPL
         s += gets
       end while s.strip.empty? || parens_are_unbalanced?(s)
 
+      parse(s)
+    end
+
+    def read_string(s)
+      if parens_are_unbalanced?(s)
+        raise ReadError, "Parens are unbalanced"
+      end
+
+      parse(s).first
+    end
+
+  private
+    def parse(s)
       tokens = s.gsub('(', ' ( ').
         gsub(')', ' ) ').
         gsub('\'', ' \' ').
@@ -434,7 +447,6 @@ module SPL
       forms
     end
 
-  private
     def read_tokens(tokens)
       token = tokens.shift
 
@@ -522,4 +534,6 @@ module SPL
   end
 end
 
-SPL::REPL.new.run
+if $0 == __FILE__
+  SPL::REPL.new.run
+end
