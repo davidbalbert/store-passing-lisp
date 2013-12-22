@@ -8,7 +8,7 @@ module SPL
 
     attr_reader :outer_env, :locations
 
-    def self.make(bindings = {}, store = EmptyStore.new, outer_env = nil)
+    def self.make(bindings = {}, outer_env = nil, store = EmptyStore.instance)
       starting_location = store.next_location
 
       locations_names_and_values = Hash[bindings.map.with_index {|(name, value), i| [i + starting_location, [name, value]]}]
@@ -32,6 +32,10 @@ module SPL
       [Environment.new(locations.merge(name => loc), self), Store.new(loc, value, store)]
     end
 
+    def has_key?(name)
+      locations.has_key?(name) || (outer_env && outer_env.has_key?(name))
+    end
+
     def [](name)
       env = self
 
@@ -40,6 +44,10 @@ module SPL
       raise NameError, "`#{name}' is unbound" if env.nil?
 
       env.locations[name]
+    end
+
+    def to_s
+      "#<SPL::Environment #{locations}>"
     end
   end
 
@@ -65,6 +73,14 @@ module SPL
       locations.max + 1
     end
 
+    def to_h
+      Hash[[[location, value]] + next_store.to_a]
+    end
+
+    def to_s
+      "#<SPL::Store (#{to_h})>"
+    end
+
   private
     def locations
       locs = []
@@ -82,6 +98,8 @@ module SPL
   class EmptyStore
     class StoreError < SPLError; end
 
+    include Singleton
+
     def initialize
       def [](loc)
         raise StoreError, "Can't find location #{loc}. This shouldn't happen"
@@ -94,6 +112,10 @@ module SPL
 
     def next_location
       0
+    end
+
+    def to_a
+      []
     end
   end
 
@@ -114,11 +136,15 @@ module SPL
       raise ArgError, "wrong number of arguments (#{args.size} for #{argc})" unless args.size == argc
 
       bindings = Hash[arg_names.to_a.zip(args)]
-      new_env, new_store = Environment.make(bindings, store, env)
+      new_env, new_store = Environment.make(bindings, env, store)
 
-      bodies.map do |expr|
-        interp.eval(expr, new_env, new_store)
+      ret = bodies.map do |expr|
+        interp, val = interp.eval(expr, new_env, new_store)
+
+        val
       end.last
+
+      [interp, ret]
     end
 
     def to_s
@@ -131,47 +157,57 @@ module SPL
 
     attr_reader :env, :store
 
-    def initialize
-      @env, @store = Environment.make({
-        "t" => "t",
-        "nil" => EmptyList.instance,
-        "car" => lambda { |l| l.car },
-        "cdr" => lambda { |l| l.cdr },
-        "+" => lambda { |*args| args.reduce(:+) }
-      })
+    def initialize(env = nil, store = nil)
+      if env.nil?
+        # Don't refer to self in any build in lambdas. They may be used with
+        # other instances of Lisp.
+        @env, @store = Environment.make({
+          "t" => "t",
+          "nil" => EmptyList.instance,
+          "car" => lambda { |interp, l| [interp, l.car] },
+          "cdr" => lambda { |interp, l| [interp, l.cdr] },
+          "+" => lambda { |interp, *args| [interp, args.reduce(:+)] }
+        })
+      else
+        @env, @store = env, store
+      end
     end
 
-    def eval(form, env = @env, store = @store)
+    def def(name, value)
+      Lisp.new(*env.def(name, value, store))
+    end
+
+    def eval(form, env = nil, store = EmptyStore.instance)
       case form
       when String
-        store[env[form]]
+        [self, get(form, env, store)]
       when Integer
-        form
+        [self, form]
       when EmptyList
-        form
+        [self, form]
       when List
         case form.car
         when "def"
           check_special_form_args(form, 2)
           name = form.cdr.car
-          value = eval(form.cdr.cdr.car, env, store)
-          @env, @store = @env.def(name, value, store)
+          interp, value = eval(form.cdr.cdr.car, env, store)
+          interp = interp.def(name, value)
 
-          value
+          [interp, name]
         when "if"
           check_special_form_args(form, 3)
 
-          predicate = eval(form.cdr.car, env, store)
+          interp, predicate = eval(form.cdr.car, env, store)
 
           if predicate != EmptyList.instance
-            eval(form.cdr.cdr.car, env, store)
+            interp.eval(form.cdr.cdr.car, env, store)
           else
-            eval(form.cdr.cdr.cdr.car, env, store)
+            interp.eval(form.cdr.cdr.cdr.car, env, store)
           end
         when "quote"
           check_special_form_args(form, 1)
 
-          form.cdr.car
+          [self, form.cdr.car]
         when "lambda"
           check_special_form_args(form, 2..-1)
           arg_names = form.cdr.car
@@ -180,13 +216,20 @@ module SPL
 
           bodies = form.cdr.cdr
 
-          Function.new(arg_names, bodies, env, store)
+          [self, Function.new(arg_names, bodies, env, store)]
         when String, List
-          eval(List.new(eval(form.car, env, store), form.cdr), env, store)
-        when Proc
-          form.car.call(*form.cdr.to_a.map { |arg| eval(arg, env, store) })
-        when Function
-          form.car.call(self, *form.cdr.to_a.map { |arg| eval(arg, env, store) })
+          interp, val = eval(form.car, env, store)
+
+          interp.eval(List.new(val, form.cdr), env, store)
+        when Proc, Function
+          interp = self
+          evaled_args = form.cdr.to_a.map do |arg|
+            interp, arg = interp.eval(arg, env, store)
+
+            arg
+          end
+
+          form.car.call(self, *evaled_args)
         else
           raise EvalError, "#{form.car} is not callable"
         end
@@ -194,6 +237,14 @@ module SPL
     end
 
   private
+    def get(name, local_env = nil, local_store = nil)
+      if local_env && local_env.has_key?(name)
+        local_store[local_env[name]]
+      else
+        store[env[name]]
+      end
+    end
+
     def check_special_form_args(form, expected_argc)
       argc = form.size - 1
 
@@ -341,7 +392,10 @@ module SPL
         begin
           forms = read
 
-          forms.each { |f| puts "=> #{interp.eval(f)}" }
+          forms.each do |f|
+            @interp, out = interp.eval(f)
+            puts "=> #{out}"
+          end
         rescue SPLError => e
           puts e.message
         end
