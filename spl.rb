@@ -367,7 +367,7 @@ module SPL
         s += gets
       end while s.strip.empty? || parens_are_unbalanced?(s)
 
-      tokens = s.gsub('(', ' ( ').gsub(')', ' ) ').split
+      tokens = s.gsub('(', ' ( ').gsub(')', ' ) ').gsub('\'', ' \' ').split
 
       forms = []
       until tokens.empty?
@@ -391,6 +391,8 @@ module SPL
         tokens.shift # => ')'
 
         List.build(l)
+      elsif token == '\''
+        List.build(["quote", read_tokens(tokens)])
       elsif token.to_i.to_s == token
         token.to_i
       else
