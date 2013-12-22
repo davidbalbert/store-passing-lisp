@@ -73,25 +73,20 @@ module SPL
       locations.max + 1
     end
 
+    def locations
+      [location] + next_store.locations
+    end
+
+    def to_a
+      [[location, value]] + next_store.to_a
+    end
+
     def to_h
-      Hash[[[location, value]] + next_store.to_a]
+      Hash[to_a]
     end
 
     def to_s
       "#<SPL::Store (#{to_h})>"
-    end
-
-  private
-    def locations
-      locs = []
-      store = self
-
-      until store.is_a? EmptyStore
-        locs << store.location
-        store = store.next_store
-      end
-
-      locs
     end
   end
 
@@ -112,6 +107,10 @@ module SPL
 
     def next_location
       0
+    end
+
+    def locations
+      []
     end
 
     def to_a
@@ -148,20 +147,24 @@ module SPL
     end
 
     def to_s
-      "#<function (anonymous)>"
+      if name
+        "#<function #{name}>"
+      else
+        "#<function (anonymous)>"
+      end
     end
   end
 
-  class Lisp
+  class Interpreter
     class EvalError < SPLError; end
 
-    attr_reader :env, :store
+    attr_reader :global_env, :global_store
 
-    def initialize(env = nil, store = nil)
-      if env.nil?
+    def initialize(global_env = nil, global_store = nil)
+      if global_env.nil?
         # Don't refer to self in any build in lambdas. They may be used with
-        # other instances of Lisp.
-        @env, @store = Environment.make({
+        # other instances of Interpreter.
+        @global_env, @global_store = Environment.make({
           "t" => "t",
           "nil" => EmptyList.instance,
           "car" => lambda { |interp, l| [interp, l.car] },
@@ -169,18 +172,18 @@ module SPL
           "+" => lambda { |interp, *args| [interp, args.reduce(:+)] }
         })
       else
-        @env, @store = env, store
+        @global_env, @global_store = global_env, global_store
       end
     end
 
     def def(name, value)
-      Lisp.new(*env.def(name, value, store))
+      Interpreter.new(*env.def(name, value, global_store))
     end
 
-    def eval(form, env = nil, store = EmptyStore.instance)
+    def eval(form, local_env = nil, local_store = EmptyStore.instance)
       case form
       when String
-        [self, get(form, env, store)]
+        [self, get(form, local_env, local_store)]
       when Integer
         [self, form]
       when EmptyList
@@ -190,19 +193,19 @@ module SPL
         when "def"
           check_special_form_args(form, 2)
           name = form.cdr.car
-          interp, value = eval(form.cdr.cdr.car, env, store)
+          interp, value = eval(form.cdr.cdr.car, local_env, local_store)
           interp = interp.def(name, value)
 
           [interp, name]
         when "if"
           check_special_form_args(form, 3)
 
-          interp, predicate = eval(form.cdr.car, env, store)
+          interp, predicate = eval(form.cdr.car, local_env, local_store)
 
           if predicate != EmptyList.instance
-            interp.eval(form.cdr.cdr.car, env, store)
+            interp.eval(form.cdr.cdr.car, local_env, local_store)
           else
-            interp.eval(form.cdr.cdr.cdr.car, env, store)
+            interp.eval(form.cdr.cdr.cdr.car, local_env, local_store)
           end
         when "quote"
           check_special_form_args(form, 1)
@@ -216,15 +219,15 @@ module SPL
 
           bodies = form.cdr.cdr
 
-          [self, Function.new(arg_names, bodies, env, store)]
+          [self, Function.new(arg_names, bodies, local_env, local_store)]
         when String, List
-          interp, val = eval(form.car, env, store)
+          interp, val = eval(form.car, local_env, local_store)
 
-          interp.eval(List.new(val, form.cdr), env, store)
+          interp.eval(List.new(val, form.cdr), local_env, local_store)
         when Proc, Function
           interp = self
           evaled_args = form.cdr.to_a.map do |arg|
-            interp, arg = interp.eval(arg, env, store)
+            interp, arg = interp.eval(arg, local_env, local_store)
 
             arg
           end
@@ -241,7 +244,7 @@ module SPL
       if local_env && local_env.has_key?(name)
         local_store[local_env[name]]
       else
-        store[env[name]]
+        global_store[global_env[name]]
       end
     end
 
@@ -268,7 +271,7 @@ module SPL
       if array.empty?
         EmptyList.instance
       else
-        List.new(array.shift, build(array))
+        List.new(array.first, build(array.drop(1)))
       end
     end
 
@@ -321,7 +324,7 @@ module SPL
 
       begin
         s += gets
-      end until !s.gsub(/\s/, "").empty? && parens_are_balanced?(s)
+      end while s.strip.empty? && parens_are_unbalanced?(s)
 
       tokens = s.gsub('(', ' ( ').gsub(')', ' ) ').split
 
@@ -354,7 +357,7 @@ module SPL
       end
     end
 
-    def parens_are_balanced?(s)
+    def parens_are_unbalanced?(s)
       count = 0
       s.each_char do |c|
         if c == '('
@@ -368,7 +371,7 @@ module SPL
         end
       end
 
-      count == 0
+      count != 0
     end
   end
 
@@ -376,7 +379,7 @@ module SPL
     attr_reader :interp, :reader
 
     def initialize
-      @interp = Lisp.new
+      @interp = Interpreter.new
       @reader = Reader.new
     end
 
@@ -393,7 +396,7 @@ module SPL
           forms = read
 
           forms.each do |f|
-            @interp, out = interp.eval(f)
+            @interp, out = eval(f)
             puts "=> #{out}"
           end
         rescue SPLError => e
@@ -405,6 +408,10 @@ module SPL
   private
     def read
       reader.read
+    end
+
+    def eval(form)
+      interp.eval(form)
     end
   end
 end
