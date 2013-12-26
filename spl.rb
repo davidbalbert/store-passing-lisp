@@ -527,30 +527,12 @@ module SPL
       cdr.third
     end
 
-    def proper?
-      if cdr.respond_to?(:proper?)
-        cdr.proper?
-      else
-        false
-      end
-    end
-
     def to_a
-      if cdr.is_a?(List) || cdr.is_a?(EmptyList)
-        [car] + cdr.to_a
-      else
-        [car, cdr]
-      end
+      [car] + cdr.to_a
     end
 
     def to_s
-      if proper?
-        "(#{to_a.join(" ")})"
-      else
-        a = to_a
-
-        "(#{a[0..-2].join(" ")} . #{a[-1]})"
-      end
+      "(#{to_a.join(" ")})"
     end
   end
 
@@ -581,10 +563,6 @@ module SPL
 
     def to_s
       "nil"
-    end
-
-    def proper?
-      true
     end
   end
 
