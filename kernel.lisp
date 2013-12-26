@@ -1,6 +1,8 @@
 (defmacro defn (name arg-names & bodies)
   `(def ,name (lambda ,arg-names ,@bodies)))
 
+(defn list (& args) args)
+
 (defn nil? (x) (= x nil))
 
 (defn atom? (x) (not (list? x)))

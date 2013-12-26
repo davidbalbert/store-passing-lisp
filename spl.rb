@@ -157,7 +157,7 @@ module SPL
       interp, local_env = interp.make_environment(bindings, env)
 
       ret = bodies.map do |expr|
-        interp, val = interp.eval(expr, local_env)
+        interp, val = interp.eval_without_macroexpand(expr, local_env)
 
         val
       end.last
@@ -180,6 +180,7 @@ module SPL
   private
     def zip_args(args)
       if varargs?
+        # [0..-3] drops the last two ("&" and "rest")
         positional = arg_names.to_a[0..-3].zip(args)
         varargs = [[arg_names.to_a[-1], List.build(args.drop(positional.size))]]
 
@@ -252,7 +253,6 @@ module SPL
           "car" => lambda { |interp, l| [interp, l.car] },
           "cdr" => lambda { |interp, l| [interp, l.cdr] },
           "cons" => lambda { |interp, car, cdr| [interp, List.new(car, cdr)] },
-          "list" => lambda { |interp, *args| [interp, List.build(args)] },
           "+" => lambda { |interp, *args| [interp, args.reduce(0, :+)] },
           "*" => lambda { |interp, *args| [interp, args.reduce(1, :*)] },
           "-" => lambda do |interp, first, *rest|
@@ -328,6 +328,12 @@ module SPL
     end
 
     def eval(expr, local_env = NullEnvironment.instance)
+      interp, expanded_expr = compile_macros(expr, local_env)
+
+      interp.eval_without_macroexpand(expanded_expr, local_env)
+    end
+
+    def eval_without_macroexpand(expr, local_env = NullEnvironment.instance)
       case expr
       when String
         value = get(expr, local_env)
@@ -342,13 +348,13 @@ module SPL
       when EmptyList
         [self, expr]
       when List
-        interp, expr = compile_macros(expr, local_env)
+        interp = self
 
         case expr.car
         when "def"
           check_special_form_args(expr, 2)
           name = expr.second
-          interp, value = interp.eval(expr.third, local_env)
+          interp, value = interp.eval_without_macroexpand(expr.third, local_env)
 
           if value.respond_to?(:with_name)
             value = value.with_name(name)
@@ -361,7 +367,7 @@ module SPL
           check_special_form_args(expr, 2)
           name = expr.second
 
-          interp, value = interp.eval(expr.third, local_env)
+          interp, value = interp.eval_without_macroexpand(expr.third, local_env)
 
           interp = interp.set!(name, value, local_env)
 
@@ -369,12 +375,12 @@ module SPL
         when "if"
           check_special_form_args(expr, 3)
 
-          interp, predicate = interp.eval(expr.second, local_env)
+          interp, predicate = interp.eval_without_macroexpand(expr.second, local_env)
 
           if predicate != EmptyList.instance
-            interp.eval(expr.third, local_env)
+            interp.eval_without_macroexpand(expr.third, local_env)
           else
-            interp.eval(expr.fourth, local_env)
+            interp.eval_without_macroexpand(expr.fourth, local_env)
           end
         when "quote"
           check_special_form_args(expr, 1)
@@ -410,14 +416,14 @@ module SPL
 
           [interp, macro_name]
         when String, List
-          interp, val = interp.eval(expr.car, local_env)
+          interp, val = interp.eval_without_macroexpand(expr.car, local_env)
 
-          interp.eval(List.new(val, expr.cdr), local_env)
+          interp.eval_without_macroexpand(List.new(val, expr.cdr), local_env)
         when Proc, Function
           args = expr.rest
 
           evaled_args = args.to_a.map do |arg|
-            interp, arg = interp.eval(arg, local_env)
+            interp, arg = interp.eval_without_macroexpand(arg, local_env)
 
             arg
           end
