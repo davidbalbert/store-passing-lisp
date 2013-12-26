@@ -253,6 +253,7 @@ module SPL
           "car" => lambda { |interp, l| [interp, l.car] },
           "cdr" => lambda { |interp, l| [interp, l.cdr] },
           "cons" => lambda { |interp, car, cdr| [interp, List.new(car, cdr)] },
+          "apply" => lambda { |interp, f, args| f.call(interp, *args) },
           "+" => lambda { |interp, *args| [interp, args.reduce(0, :+)] },
           "*" => lambda { |interp, *args| [interp, args.reduce(1, :*)] },
           "-" => lambda do |interp, first, *rest|
