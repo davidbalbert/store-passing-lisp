@@ -146,14 +146,14 @@ module SPL
       @arg_names = arg_names
       @bodies = bodies.to_a
       @env = env
-      @argc = arg_names.size
+      @argc = get_argc(arg_names)
       @name = name
     end
 
     def call(interp, *args)
-      raise ArgError, "wrong number of arguments (#{args.size} for #{argc})" unless args.size == argc
+      check_arg_count(args)
 
-      bindings = Hash[arg_names.to_a.zip(args)]
+      bindings = zip_args(args)
       interp, local_env = interp.make_environment(bindings, env)
 
       ret = bodies.map do |expr|
@@ -175,6 +175,53 @@ module SPL
       else
         "#<function (anonymous)>"
       end
+    end
+
+  private
+    def zip_args(args)
+      if varargs?
+        positional = arg_names.to_a[0..-3].zip(args)
+        varargs = [[arg_names.to_a[-1], List.build(args.drop(positional.size))]]
+
+        Hash[positional + varargs]
+      else
+        Hash[arg_names.to_a.zip(args)]
+      end
+    end
+
+    def check_arg_count(args)
+      if !varargs? && args.size != argc
+        raise ArgError, "wrong number of arguments (#{args.size} for #{argc})"
+      end
+
+      if varargs?
+        min_argc = argc * -1 - 1
+
+        if args.size < min_argc
+          raise ArgError, "wrong number of arguments (#{args.size} for #{min_argc}+)"
+        end
+      end
+    end
+
+    def get_argc(arg_names)
+      names_array = arg_names.to_a
+      if names_array.include?("&")
+        if names_array.count("&") > 1
+          raise ArgError, "`&' can't appear more than once in the arg list"
+        end
+
+        if names_array[-2] != "&"
+          raise ArgError, "`&' must appear in the second to last position of the arg list"
+        end
+
+        (arg_names.size - 1) * -1
+      else
+        arg_names.size
+      end
+    end
+
+    def varargs?
+      argc < 0
     end
   end
 
