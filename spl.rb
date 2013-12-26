@@ -166,7 +166,7 @@ module SPL
     end
 
     def with_name(name)
-      Function.new(arg_names, bodies, env, name)
+      self.class.new(arg_names, bodies, env, name)
     end
 
     def to_s
@@ -175,6 +175,16 @@ module SPL
       else
         "#<function (anonymous)>"
       end
+    end
+  end
+
+  class Macro < Function
+    def initialize(arg_names, body, env, name = nil)
+      super(arg_names, [body], env, name)
+    end
+
+    def to_s
+      "#<macro #{name}>"
     end
   end
 
@@ -196,7 +206,52 @@ module SPL
           "cdr" => lambda { |interp, l| [interp, l.cdr] },
           "cons" => lambda { |interp, car, cdr| [interp, List.new(car, cdr)] },
           "list" => lambda { |interp, *args| [interp, List.build(args)] },
-          "+" => lambda { |interp, *args| [interp, args.reduce(0, :+)] }
+          "+" => lambda { |interp, *args| [interp, args.reduce(0, :+)] },
+          "*" => lambda { |interp, *args| [interp, args.reduce(1, :*)] },
+          "-" => lambda do |interp, first, *rest|
+            if rest.empty?
+              [interp, -1 * first]
+            else
+              [interp, rest.reduce(first, :-)]
+            end
+          end,
+          "/" => lambda do |interp, first, *rest|
+            if rest.empty?
+              [interp, first]
+            else
+              [interp, rest.reduce(first, :/)]
+            end
+          end,
+          "=" => lambda { |interp, a, b| [interp, a == b ? "t" : EmptyList.instance] },
+          "puts" => lambda do |interp, s|
+            puts s
+            [interp, s]
+          end,
+          "load" => lambda do |interp, path|
+            begin
+              s = File.read(path)
+            rescue StandardError => e
+              raise EvalError, e.message
+            end
+
+            reader = Reader.new
+            forms = reader.read_string(s)
+
+            forms.each do |f|
+              interp, _ = interp.eval(f)
+            end
+
+            [interp, "t"]
+          end,
+          "list?" => lambda do |interp, l|
+            [interp, l.is_a?(List) ? "t" : EmptyList.instance]
+          end,
+          "symbol?" => lambda do |interp, s|
+            [interp, s.is_a?(String) ? "t" : EmptyList.instance]
+          end,
+          "integer?" => lambda do |interp, i|
+            [interp, i.is_a?(Integer) ? "t" : EmptyList.instance]
+          end
         })
       end
     end
@@ -208,6 +263,10 @@ module SPL
     end
 
     def def(name, value)
+      if global_env.has_key?(name)
+        raise EvalError, "cannot `def' bound variable `#{name}'"
+      end
+
       Interpreter.new(*global_env.def(name, value, store))
     end
 
@@ -224,17 +283,25 @@ module SPL
     def eval(expr, local_env = NullEnvironment.instance)
       case expr
       when String
-        [self, get(expr, local_env)]
+        value = get(expr, local_env)
+
+        if value.is_a? Macro
+          raise EvalError, "can't take value of macro `#{expr}'"
+        end
+
+        [self, value]
       when Integer
         [self, expr]
       when EmptyList
         [self, expr]
       when List
+        interp, expr = compile_macros(expr, local_env)
+
         case expr.car
         when "def"
           check_special_form_args(expr, 2)
           name = expr.second
-          interp, value = eval(expr.third, local_env)
+          interp, value = interp.eval(expr.third, local_env)
 
           if value.respond_to?(:with_name)
             value = value.with_name(name)
@@ -247,7 +314,7 @@ module SPL
           check_special_form_args(expr, 2)
           name = expr.second
 
-          interp, value = eval(expr.third, local_env)
+          interp, value = interp.eval(expr.third, local_env)
 
           interp = interp.set!(name, value, local_env)
 
@@ -255,7 +322,7 @@ module SPL
         when "if"
           check_special_form_args(expr, 3)
 
-          interp, predicate = eval(expr.second, local_env)
+          interp, predicate = interp.eval(expr.second, local_env)
 
           if predicate != EmptyList.instance
             interp.eval(expr.third, local_env)
@@ -265,7 +332,7 @@ module SPL
         when "quote"
           check_special_form_args(expr, 1)
 
-          [self, expr.second]
+          [interp, expr.second]
         when "quasiquote"
           check_special_form_args(expr, 1)
 
@@ -279,13 +346,27 @@ module SPL
 
           bodies = expr.drop(2)
 
-          [self, Function.new(arg_names, bodies, local_env)]
+          [interp, Function.new(arg_names, bodies, local_env)]
+        when "defmacro"
+          check_special_form_args(expr, 3)
+
+          macro_name = expr.second
+          arg_names = expr.third
+
+          raise EvalError, "arglist #{arg_names} must be a list" unless arg_names.is_a?(List) || arg_names.is_a?(EmptyList)
+
+          body = expr.fourth
+
+          macro = Macro.new(arg_names, body, local_env, macro_name)
+
+          interp = interp.def(macro_name, macro)
+
+          [interp, macro_name]
         when String, List
-          interp, val = eval(expr.car, local_env)
+          interp, val = interp.eval(expr.car, local_env)
 
           interp.eval(List.new(val, expr.cdr), local_env)
         when Proc, Function
-          interp = self
           args = expr.rest
 
           evaled_args = args.to_a.map do |arg|
@@ -294,7 +375,11 @@ module SPL
             arg
           end
 
-          expr.car.call(self, *evaled_args)
+          begin
+            expr.car.call(self, *evaled_args)
+          rescue StandardError => e
+            raise EvalError, e.message
+          end
         else
           raise EvalError, "#{expr.car} is not callable"
         end
@@ -302,6 +387,32 @@ module SPL
     end
 
   protected
+    def compile_macros(expr, local_env)
+      if expr.is_a?(List) && expr.first.is_a?(String) && has_key?(expr.first, local_env) && get(expr.first, local_env).is_a?(Macro)
+        macro = get(expr.first, local_env)
+
+        interp = self
+        macroexpanded_args = expr.rest.to_a.map do |arg|
+          interp, arg = interp.compile_macros(arg, local_env)
+
+          arg
+        end
+
+        macro.call(self, *macroexpanded_args)
+      elsif expr.is_a?(List)
+        interp = self
+        macroexpanded_expr = expr.to_a.map do |ex|
+          interp, ex = interp.compile_macros(ex, local_env)
+
+          ex
+        end
+
+        [interp, List.build(macroexpanded_expr)]
+      else
+        [self, expr]
+      end
+    end
+
     def check_unquotes_for_errors(expr)
       if expr.is_a? List
         expr.to_a.each do |ex|
@@ -352,6 +463,10 @@ module SPL
       else
         store[global_env[name]]
       end
+    end
+
+    def has_key?(name, local_env)
+      local_env.has_key?(name) || global_env.has_key?(name)
     end
 
     def check_special_form_args(expr, expected_argc)
@@ -412,12 +527,30 @@ module SPL
       cdr.third
     end
 
+    def proper?
+      if cdr.respond_to?(:proper?)
+        cdr.proper?
+      else
+        false
+      end
+    end
+
     def to_a
-      [car] + cdr.to_a
+      if cdr.is_a?(List) || cdr.is_a?(EmptyList)
+        [car] + cdr.to_a
+      else
+        [car, cdr]
+      end
     end
 
     def to_s
-      "(#{to_a.join(" ")})"
+      if proper?
+        "(#{to_a.join(" ")})"
+      else
+        a = to_a
+
+        "(#{a[0..-2].join(" ")} . #{a[-1]})"
+      end
     end
   end
 
@@ -449,6 +582,10 @@ module SPL
     def to_s
       "nil"
     end
+
+    def proper?
+      true
+    end
   end
 
   class Reader
@@ -469,7 +606,7 @@ module SPL
         raise ReadError, "Parens are unbalanced"
       end
 
-      parse(s).first
+      parse(s)
     end
 
   private
@@ -549,6 +686,8 @@ module SPL
         puts
         exit 0
       }
+
+      @interp, _ = eval(reader.read_string("(load 'kernel.lisp)").first)
 
       loop do
         print "spl> "
