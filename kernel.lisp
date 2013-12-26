@@ -1,13 +1,14 @@
-(def nil? (lambda (x)
-            (= x nil)))
+(defmacro defn (name arg-names & bodies)
+  `(def ,name (lambda ,arg-names ,@bodies)))
 
-(def atom? (lambda (x)
-             (not (list? x))))
+(defn nil? (x) (= x nil))
 
-(def not (lambda (x)
-           (if (= x nil)
-             t
-             nil)))
+(defn atom? (x) (not (list? x)))
+
+(defn not (x)
+      (if (= x nil)
+        t
+        nil))
 
 (defmacro unless (predicate yes no)
   `(if (not ,predicate)
