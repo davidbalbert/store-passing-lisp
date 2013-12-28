@@ -3,6 +3,7 @@ require 'singleton'
 module SPL
   class SPLError < StandardError; end
   class NameError < SPLError; end
+  class ArgError < SPLError; end
 
   class NullEnvironment
     include Singleton
@@ -137,10 +138,61 @@ module SPL
     end
   end
 
-  class Function
-    class ArgError < SPLError; end
+  module CountableArgs
+    private
 
+    def check_arg_count(args)
+      if !varargs? && args.size != argc
+        raise ArgError, "`#{name}': wrong number of arguments (#{args.size} for #{argc})"
+      end
+
+      if varargs?
+        min_argc = argc * -1 - 1
+
+        if args.size < min_argc
+          raise ArgError, "`#{name}': wrong number of arguments (#{args.size} for #{min_argc}+)"
+        end
+      end
+    end
+  end
+
+  class Builtin
+    attr_reader :name, :body
+
+    include CountableArgs
+
+    def initialize(name, &body)
+      @name = name
+      @body = body
+    end
+
+    def call(interp, *args)
+      check_arg_count(args)
+
+      body.call(interp, *args)
+    end
+
+    def argc
+      if varargs?
+        body.arity + 1
+      else
+        body.arity - 1
+      end
+    end
+
+    def varargs?
+      body.arity < 0
+    end
+
+    def to_s
+      "#<builtin #{name}>"
+    end
+  end
+
+  class Function
     attr_reader :arg_names, :argc, :bodies, :env, :name
+
+    include CountableArgs
 
     def initialize(arg_names, bodies, env, name = nil)
       @arg_names = arg_names
@@ -190,20 +242,6 @@ module SPL
       end
     end
 
-    def check_arg_count(args)
-      if !varargs? && args.size != argc
-        raise ArgError, "wrong number of arguments (#{args.size} for #{argc})"
-      end
-
-      if varargs?
-        min_argc = argc * -1 - 1
-
-        if args.size < min_argc
-          raise ArgError, "wrong number of arguments (#{args.size} for #{min_argc}+)"
-        end
-      end
-    end
-
     def get_argc(arg_names)
       names_array = arg_names.to_a
       if names_array.include?("&")
@@ -250,32 +288,33 @@ module SPL
         @global_env, @store = @global_env.make_environment({
           "t" => "t",
           "nil" => EmptyList.instance,
-          "car" => lambda { |interp, l| [interp, l.car] },
-          "cdr" => lambda { |interp, l| [interp, l.cdr] },
-          "cons" => lambda { |interp, car, cdr| [interp, List.new(car, cdr)] },
-          "apply" => lambda { |interp, f, args| f.call(interp, *args) },
-          "+" => lambda { |interp, *args| [interp, args.reduce(0, :+)] },
-          "*" => lambda { |interp, *args| [interp, args.reduce(1, :*)] },
-          "-" => lambda do |interp, first, *rest|
+          "car" => Builtin.new("car") { |interp, l| [interp, l.car] },
+          "cdr" => Builtin.new("cdr") { |interp, l| [interp, l.cdr] },
+          "cons" => Builtin.new("cons") { |interp, car, cdr| [interp, List.new(car, cdr)] },
+          "apply" => Builtin.new("apply") { |interp, f, args| f.call(interp, *args) },
+          "eval" => Builtin.new("eval") { |interp, expr| interp.eval(expr) },
+          "+" => Builtin.new("+") { |interp, *args| [interp, args.reduce(0, :+)] },
+          "*" => Builtin.new("*") { |interp, *args| [interp, args.reduce(1, :*)] },
+          "-" => Builtin.new("-") do |interp, first, *rest|
             if rest.empty?
               [interp, -1 * first]
             else
               [interp, rest.reduce(first, :-)]
             end
           end,
-          "/" => lambda do |interp, first, *rest|
+          "/" => Builtin.new("/") do |interp, first, *rest|
             if rest.empty?
               [interp, first]
             else
               [interp, rest.reduce(first, :/)]
             end
           end,
-          "=" => lambda { |interp, a, b| [interp, a == b ? "t" : EmptyList.instance] },
-          "puts" => lambda do |interp, s|
+          "=" => Builtin.new("=") { |interp, a, b| [interp, a == b ? "t" : EmptyList.instance] },
+          "puts" => Builtin.new("puts") do |interp, s|
             puts s
             [interp, s]
           end,
-          "load" => lambda do |interp, path|
+          "load" => Builtin.new("load") do |interp, path|
             begin
               s = File.read(path)
             rescue StandardError => e
@@ -291,13 +330,13 @@ module SPL
 
             [interp, "t"]
           end,
-          "list?" => lambda do |interp, l|
+          "list?" => Builtin.new("list?") do |interp, l|
             [interp, l.is_a?(List) ? "t" : EmptyList.instance]
           end,
-          "symbol?" => lambda do |interp, s|
+          "symbol?" => Builtin.new("symbol?") do |interp, s|
             [interp, s.is_a?(String) ? "t" : EmptyList.instance]
           end,
-          "integer?" => lambda do |interp, i|
+          "integer?" => Builtin.new("integer?") do |interp, i|
             [interp, i.is_a?(Integer) ? "t" : EmptyList.instance]
           end
         })
@@ -420,7 +459,7 @@ module SPL
           interp, val = interp.eval_without_macroexpand(expr.car, local_env)
 
           interp.eval_without_macroexpand(List.new(val, expr.cdr), local_env)
-        when Proc, Function
+        when Builtin, Function
           args = expr.rest
 
           evaled_args = args.to_a.map do |arg|
