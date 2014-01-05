@@ -465,11 +465,7 @@ module SPL
             arg
           end
 
-          begin
-            expr.car.call(self, *evaled_args)
-          rescue StandardError => e
-            raise EvalError, e.message
-          end
+          expr.car.call(interp, *evaled_args)
         else
           raise EvalError, "#{expr.car} is not callable"
         end
