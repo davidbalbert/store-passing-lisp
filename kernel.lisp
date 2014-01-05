@@ -43,7 +43,7 @@
     acc))
 
 (defun comp (f g)
-  (lambda (x) (f (g x))))
+  (lambda (& args) (f (apply g args))))
 
 (defmacro let (bindings expr & exprs)
   ((lambda (names vals)
