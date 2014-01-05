@@ -190,7 +190,7 @@ module SPL
   end
 
   class Function
-    attr_reader :arg_names, :argc, :bodies, :env, :name
+    attr_reader :arg_names, :argc, :bodies, :env
 
     include CountableArgs
 
@@ -221,12 +221,16 @@ module SPL
       self.class.new(arg_names, bodies, env, name)
     end
 
+    def name
+      @name || "(anonymous)"
+    end
+
     def to_s
-      if name
-        "#<function #{name}>"
-      else
-        "#<function (anonymous)>"
-      end
+      "#<function #{name}>"
+    end
+
+    def varargs?
+      argc < 0
     end
 
   private
@@ -258,17 +262,9 @@ module SPL
         arg_names.size
       end
     end
-
-    def varargs?
-      argc < 0
-    end
   end
 
   class Macro < Function
-    def initialize(arg_names, body, env, name = nil)
-      super(arg_names, [body], env, name)
-    end
-
     def to_s
       "#<macro #{name}>"
     end
@@ -441,16 +437,16 @@ module SPL
 
           [interp, Function.new(arg_names, bodies, local_env)]
         when "defmacro"
-          check_special_form_args(expr, 3)
+          check_special_form_args(expr, 3..-1)
 
           macro_name = expr.second
           arg_names = expr.third
 
           raise EvalError, "arglist #{arg_names} must be a list" unless arg_names.is_a?(List) || arg_names.is_a?(EmptyList)
 
-          body = expr.fourth
+          bodies = expr.drop(3)
 
-          macro = Macro.new(arg_names, body, local_env, macro_name)
+          macro = Macro.new(arg_names, bodies, local_env, macro_name)
 
           interp = interp.def(macro_name, macro)
 
