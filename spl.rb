@@ -334,6 +334,9 @@ module SPL
           end,
           "integer?" => Builtin.new("integer?") do |interp, i|
             [interp, i.is_a?(Integer) ? "t" : EmptyList.instance]
+          end,
+          "macroexpand-1" => Builtin.new("macroexpand-1") do |interp, expr|
+            interp.macroexpand_1(expr)
           end
         })
       end
@@ -477,26 +480,27 @@ module SPL
 
   protected
     def compile_macros(expr, local_env)
-      if expr.is_a?(List) && expr.first.is_a?(String) && has_key?(expr.first, local_env) && get(expr.first, local_env).is_a?(Macro)
-        macro = get(expr.first, local_env)
-
-        interp = self
-        macroexpanded_args = expr.rest.to_a.map do |arg|
-          interp, arg = interp.compile_macros(arg, local_env)
-
-          arg
-        end
-
-        macro.call(self, *macroexpanded_args)
+      if expr.is_a?(List) && expr.first == "quote"
+        [self, expr]
+      elsif expr.is_a?(List) && expr.first == "quasiquote"
+        [self, expr]
       elsif expr.is_a?(List)
         interp = self
-        macroexpanded_expr = expr.to_a.map do |ex|
+        macroexpanded_expr = expr.map do |ex|
           interp, ex = interp.compile_macros(ex, local_env)
 
           ex
         end
 
-        [interp, List.build(macroexpanded_expr)]
+        old = new = macroexpanded_expr
+
+        loop do
+          interp, new = interp.macroexpand_1(old)
+          break if old == new
+          old = new
+        end
+
+        [interp, new]
       else
         [self, expr]
       end
@@ -543,6 +547,28 @@ module SPL
       else
         [self, expr]
       end
+    end
+
+    def macroexpand_1(expr)
+      unless expr.is_a?(List)
+        return [self, expr]
+      end
+
+      unless expr.car.is_a?(String)
+        return [self, expr]
+      end
+
+      unless global_env.has_key?(expr.car)
+        return [self, expr]
+      end
+
+      macro = get(expr.car, NullEnvironment.instance)
+
+      unless macro.is_a?(Macro)
+        return [self, expr]
+      end
+
+      macro.call(self, *expr.rest.to_a)
     end
 
   private
@@ -616,6 +642,10 @@ module SPL
       cdr.third
     end
 
+    def map(&block)
+      List.new(yield(car), cdr.map(&block))
+    end
+
     def to_a
       [car] + cdr.to_a
     end
@@ -644,6 +674,10 @@ module SPL
 
     def size
       0
+    end
+
+    def map
+      self
     end
 
     def to_a
