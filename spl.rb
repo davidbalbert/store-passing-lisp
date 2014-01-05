@@ -47,7 +47,7 @@ module SPL
 
     def def(name, value, store)
       loc = store.next_location
-      [Environment.new(locations.merge(name => loc), self), Store.new(loc, value, store)]
+      [Environment.new(locations.merge(name => loc), NullEnvironment.instance), Store.new(loc, value, store)]
     end
 
     def has_key?(name)
