@@ -308,7 +308,7 @@ module SPL
           "=" => Builtin.new("=") { |interp, a, b| [interp, a == b ? "t" : EmptyList.instance] },
           "puts" => Builtin.new("puts") do |interp, s|
             puts s
-            [interp, s]
+            [interp, EmptyList.instance]
           end,
           "load" => Builtin.new("load") do |interp, path|
             begin
