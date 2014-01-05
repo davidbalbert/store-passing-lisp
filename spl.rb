@@ -304,6 +304,11 @@ module SPL
             end
           end,
           "=" => Builtin.new("=") { |interp, a, b| [interp, a == b ? "t" : EmptyList.instance] },
+          ">" => Builtin.new(">") { |interp, a, b| [interp, a > b ? "t" : EmptyList.instance] },
+          "<" => Builtin.new("<") { |interp, a, b| [interp, a < b ? "t" : EmptyList.instance] },
+          ">=" => Builtin.new(">=") { |interp, a, b| [interp, a >= b ? "t" : EmptyList.instance] },
+          "<=" => Builtin.new("<=") { |interp, a, b| [interp, a <= b ? "t" : EmptyList.instance] },
+          "length" => Builtin.new("length") { |interp, o| [interp, o.length ] },
           "puts" => Builtin.new("puts") do |interp, s|
             puts s
             [interp, EmptyList.instance]
@@ -480,13 +485,8 @@ module SPL
         [self, expr]
       elsif expr.is_a?(List)
         interp = self
-        macroexpanded_expr = expr.map do |ex|
-          interp, ex = interp.compile_macros(ex, local_env)
 
-          ex
-        end
-
-        old = new = macroexpanded_expr
+        old = new = expr
 
         loop do
           interp, new = interp.macroexpand_1(old)
@@ -494,7 +494,13 @@ module SPL
           old = new
         end
 
-        [interp, new]
+        macroexpanded_expr = new.map do |ex|
+          interp, ex = interp.compile_macros(ex, local_env)
+
+          ex
+        end
+
+        [interp, macroexpanded_expr]
       else
         [self, expr]
       end
@@ -607,6 +613,8 @@ module SPL
 
     attr_reader :car, :cdr, :size
 
+    alias length size
+
     def initialize(car, cdr)
       @car = car
       @cdr = cdr
@@ -669,6 +677,8 @@ module SPL
     def size
       0
     end
+
+    alias length size
 
     def map
       self
