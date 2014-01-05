@@ -279,8 +279,6 @@ module SPL
       @global_env, @store = global_env, store
 
       if @global_env.is_a? NullEnvironment
-        # Don't refer to self in any build in lambdas. They may be used with
-        # other instances of Interpreter.
         @global_env, @store = @global_env.make_environment({
           "t" => "t",
           "nil" => EmptyList.instance,
@@ -358,7 +356,7 @@ module SPL
 
     def set!(name, value, local_env)
       if local_env.has_key?(name)
-        Interpreter.new(global_env, store.set(local_env[name],  value))
+        Interpreter.new(global_env, store.set(local_env[name], value))
       elsif global_env.has_key?(name)
         Interpreter.new(global_env, store.set(global_env[name], value))
       else
