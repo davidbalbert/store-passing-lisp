@@ -1,5 +1,5 @@
-(defmacro defun (name arg-names & bodies)
-  `(def ,name (lambda ,arg-names ,@bodies)))
+(defmacro defun (name arg-names body & bodies)
+  `(def ,name (lambda ,arg-names ,body ,@bodies)))
 
 (defun list (& args) args)
 
