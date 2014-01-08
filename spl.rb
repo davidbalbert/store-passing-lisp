@@ -270,6 +270,143 @@ module SPL
     end
   end
 
+  class AST
+    class ASTError < SPLError; end;
+
+    include CountableArgs
+
+    def self.name(name = nil)
+      if name
+        @name = name
+      else
+        @name
+      end
+    end
+
+    def self.args(*arg_names)
+      attr_reader *arg_names
+
+      define_method :argc do
+        arg_names.size
+      end
+
+      define_method :parse_args do |args|
+        arg_names.each do |name|
+          instance_variable_set("@#{name}", AST.build(args.car))
+          args = args.cdr
+        end
+      end
+    end
+
+    def self.varargs(*arg_names)
+      attr_reader *arg_names
+
+      define_method :argc do
+        arg_names.size * -1
+      end
+
+      define_method :parse_args do |args|
+        positional_names = arg_names[1..-2]
+        rest_name = arg_names[-1]
+
+        positional_names.zip(args.to_a).each do |name, value|
+          instance_variable_set("@#{name}", AST.build(value))
+        end
+
+        rest_args = args.to_a.drop(positional_names.size).map { |arg| AST.build(arg) }
+
+        instance_varaible_set("@#{rest_name}", rest_args)
+      end
+    end
+
+    def initialize(args)
+      check_arg_count(args)
+      parse_args(args)
+    end
+
+    def varargs?
+      argc < 0
+    end
+
+    def name
+      self.class.name
+    end
+
+
+    class Def < AST
+      name "def"
+      args :name, :value
+    end
+
+    class SetBang < AST
+      name "set!"
+      args :name, :value
+    end
+
+    class If < AST
+      name "if"
+      args :predicate, :yes, :no
+    end
+
+    class Quote < AST
+      name "quote"
+      args :value
+    end
+
+    class QuasiQuote < AST
+      name "quasiquote"
+      args :value
+    end
+
+    class Unquote < AST
+      name "unquote"
+      args :value
+    end
+
+    class Lambda < AST
+      name "lambda"
+      varargs :arglist, :bodies
+    end
+
+    class DefMacro < AST
+      name "defmacro"
+      varargs :name, :arglist, :bodies
+    end
+
+    Call = Struct.new(:f, :args)
+
+    def self.build(expr)
+      case expr
+      when Integer, String
+        expr
+      when List
+        args = expr.cdr
+        case expr.car
+        when "def"
+          Def.new(args)
+        when "set!"
+          SetBang.new(args)
+        when "if"
+          If.new(args)
+        when "quote"
+          Quote.new(args)
+        when "quasiquote"
+          QuasiQuote.new(args)
+        when "unquote"
+          Unquote.new(args)
+        when "lambda"
+          Lambda.new(args)
+        when "defmacro"
+          DefMacro.new(args)
+        else
+          Call.new(AST.build(expr.car), args.to_a.map { |arg| AST.build(arg) })
+        end
+      else
+        raise ASTError, "Don't know how to build an AST from a #{expr.class}"
+      end
+    end
+  end
+
   class Interpreter
     class EvalError < SPLError; end
 
@@ -367,6 +504,8 @@ module SPL
 
     def eval(expr, local_env = NullEnvironment.instance)
       interp, expanded_expr = compile_macros(expr, local_env)
+
+      ast = AST.build(expanded_expr)
 
       interp.eval_without_macroexpand(expanded_expr, local_env)
     end
@@ -688,6 +827,9 @@ module SPL
       "nil"
     end
   end
+
+  True = "t"
+  False = EmptyList.instance
 
   class Reader
     class ReadError < SPLError; end
