@@ -314,11 +314,7 @@ module SPL
             [interp, EmptyList.instance]
           end,
           "load" => Builtin.new("load") do |interp, path|
-            begin
-              s = File.read(path)
-            rescue StandardError => e
-              raise EvalError, e.message
-            end
+            s = File.read(path)
 
             reader = Reader.new
             forms = reader.read_string(s)
@@ -470,7 +466,11 @@ module SPL
             arg
           end
 
-          expr.car.call(interp, *evaled_args)
+          begin
+            expr.car.call(interp, *evaled_args)
+          rescue StandardError => e
+            raise EvalError, e.message
+          end
         else
           raise EvalError, "#{expr.car} is not callable"
         end
