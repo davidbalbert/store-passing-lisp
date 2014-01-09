@@ -332,15 +332,14 @@ module SPL
       self.class.name
     end
 
-
     class Def < AST
       name "def"
-      args :name, :value
+      args :var, :value
     end
 
     class SetBang < AST
       name "set!"
-      args :name, :value
+      args :var, :value
     end
 
     class If < AST
