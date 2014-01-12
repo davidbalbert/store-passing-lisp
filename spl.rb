@@ -271,13 +271,13 @@ module SPL
   end
 
   class NamedFunction < Function
-    undef with_name
+    undef with_name if method_defined?(:with_name)
   end
 
   class AST
     class ASTError < SPLError; end;
 
-    include CountableArgs
+    extend CountableArgs
 
     def self.name(name = nil)
       if name
@@ -290,29 +290,29 @@ module SPL
     def self.args(*arg_names)
       attr_reader *arg_names
 
-      define_method :argc do
+      define_singleton_method :argc do
         arg_names.size
       end
 
-      define_method :parse_args do |args|
-        arg_names.each do |name|
-          instance_variable_set("@#{name}", AST.build(args.car))
-          args = args.cdr
+      define_method :initialize do |*args|
+        arg_names.zip(args).each do |name, val|
+          instance_variable_set("@#{name}", val)
         end
       end
     end
 
-    def initialize(args)
+    def self.parse_args(args)
+      args.map { |a| AST.build(a) }
+    end
+
+    def self.parse(args)
       check_arg_count(args)
-      parse_args(args)
+      args = parse_args(args)
+      new(*args)
     end
 
-    def varargs?
+    def self.varargs?
       argc < 0
-    end
-
-    def name
-      self.class.name
     end
 
     class Def < AST
@@ -334,11 +334,15 @@ module SPL
       name "quote"
       attr_reader :value
 
-      def parse_args(args)
-        @value = args.car
+      def self.parse_args(args)
+        args
       end
 
-      def argc
+      def initialize(value)
+        @value = value
+      end
+
+      def self.argc
         1
       end
     end
@@ -347,11 +351,15 @@ module SPL
       name "quasiquote"
       attr_reader :value
 
-      def parse_args(args)
-        @value = args.car
+      def self.parse_args(args)
+        args
       end
 
-      def argc
+      def initialize(value)
+        @value = value
+      end
+
+      def self.argc
         1
       end
     end
@@ -360,17 +368,21 @@ module SPL
       name "lambda"
       attr_reader :arglist, :bodies
 
-      def parse_args(args)
+      def self.parse_args(args)
         unless args.car.respond_to?(:to_a)
           raise TypeError, "#{args.car.inspect} cannot be coerced into Array"
         end
 
-        @arglist = args.car.to_a
-        @bodies = args.cdr.map { |a| AST.build(a) }.to_a
+        [args.car.to_a, args.cdr.map { |a| AST.build(a) }.to_a]
       end
 
-      def argc
+      def self.argc
         -3
+      end
+
+      def initialize(arglist, bodies)
+        @arglist = arglist
+        @bodies = bodies
       end
     end
 
@@ -378,29 +390,39 @@ module SPL
       name "defmacro"
       attr_reader :var, :arglist, :bodies
 
-      def parse_args(args)
+      def self.parse_args(args)
         unless args.second.respond_to?(:to_a)
           raise TypeError, "#{args.second.inspect} cannot be coerced into Array"
         end
 
-        @var = args.first
-        @arglist = args.second.to_a
-        @bodies = args.drop(2).map { |a| AST.build(a) }.to_a
+        [args.first, args.second.to_a, args.drop(2).map { |a| AST.build(a) }.to_a]
       end
 
-      def argc
+      def self.argc
         -4
+      end
+
+      def initialize(var, arglist, bodies)
+        @var = var
+        @arglist = arglist
+        @bodies = bodies
       end
     end
 
     class Call
       attr_reader :f, :args
 
+      def self.parse(f, args)
+        new(AST.build(f), args.map { |a| AST.build(a) }.to_a)
+      end
+
       def initialize(f, args)
-        @f = AST.build(f)
-        @args = args.to_a.map { |a| AST.build(a) }
+        @f = f
+        @args = args
       end
     end
+
+    TailCall = Struct.new(:f, :args)
 
     def self.build(expr)
       case expr
@@ -410,29 +432,67 @@ module SPL
         args = expr.cdr
         case expr.car
         when "def"
-          Def.new(args)
+          Def.parse(args)
         when "set!"
-          SetBang.new(args)
+          SetBang.parse(args)
         when "if"
-          If.new(args)
+          If.parse(args)
         when "quote"
-          Quote.new(args)
+          Quote.parse(args)
         when "quasiquote"
-          QuasiQuote.new(args)
+          QuasiQuote.parse(args)
         when "unquote"
-          Unquote.new(args)
+          Unquote.parse(args)
         when "lambda"
-          Lambda.new(args)
+          Lambda.parse(args)
         when "defmacro"
-          DefMacro.new(args)
+          DefMacro.parse(args)
         else
-          Call.new(expr.car, args)
+          Call.parse(expr.car, args)
         end
       else
         raise ASTError, "Don't know how to build an AST from a #{expr.class}"
       end
     end
+
+    def self.mark_tail_calls(node, is_tail_call: false)
+      case node
+      when Integer, String, EmptyList, Quote, QuasiQuote
+        node
+      when Def
+        var = AST.mark_tail_calls(node.var, is_tail_call: false)
+        value = AST.mark_tail_calls(node.value, is_tail_call: false)
+        Def.new(var, value)
+      when SetBang
+        var = AST.mark_tail_calls(node.var, is_tail_call: false)
+        value = AST.mark_tail_calls(node.value, is_tail_call: false)
+        SetBang.new(var, value)
+      when If
+        predicate = AST.mark_tail_calls(node.predicate, is_tail_call: false)
+        yes = AST.mark_tail_calls(node.yes, is_tail_call: is_tail_call)
+        no = AST.mark_tail_calls(node.no, is_tail_call: is_tail_call)
+        If.new(predicate, yes, no)
+      when Lambda
+        non_tail = node.bodies[0..-2].map { |n| AST.mark_tail_calls(n, is_tail_call: false) }
+        tail = AST.mark_tail_calls(node.bodies[-1], is_tail_call: true)
+        Lambda.new(node.arglist, non_tail + [tail])
+      when DefMacro
+        non_tail = node.bodies[0..-2].map { |n| AST.mark_tail_calls(n, is_tail_call: false) }
+        tail = AST.mark_tail_calls(node.bodies[-1], is_tail_call: true)
+        DefMacro.new(node.var, node.arglist, non_tail + [tail])
+      when Call
+        if is_tail_call
+          TailCall.new(node.f, node.args)
+        else
+          node
+        end
+      else
+        raise ASTError, "Unrecognized AST node type #{node.class}"
+      end
+    end
   end
+
+  TailCallResult = Struct.new(:interp, :f, :args)
 
   class Interpreter
     class EvalError < SPLError; end
@@ -532,7 +592,7 @@ module SPL
     def eval(expr, local_env = NullEnvironment.instance)
       interp, expanded_expr = compile_macros(expr, local_env)
 
-      ast = AST.build(expanded_expr)
+      ast = AST.mark_tail_calls(AST.build(expanded_expr))
 
       interp.eval_without_macroexpand(ast, local_env)
     end
@@ -603,11 +663,47 @@ module SPL
           arg
         end
 
-        if f.respond_to?(:call)
-          f.call(interp, *evaled_args)
-        else
-          raise EvalError, "#{f} is not callable"
+        #begin
+          #if f.respond_to?(:call)
+            #f.call(interp, *evaled_args)
+          #else
+            #raise EvalError, "#{f} is not callable"
+          #end
+        #rescue TailCallException => tc
+          #interp = tc.interp
+          #f = tc.f
+          #evaled_args = tc.args
+          #retry
+        #end
+
+        result = TailCallResult.new(interp, f, evaled_args)
+
+        while result
+          interp = result.interp
+          f = result.f
+          evaled_args = result.args
+
+          result = catch(:tailcall) do
+            if f.respond_to?(:call)
+              return f.call(interp, *evaled_args)
+            else
+              raise EvalError, "#{f} is not callable"
+            end
+          end
         end
+      when AST::TailCall
+        interp, f = interp.eval_without_macroexpand(node.f, local_env)
+
+        args = node.args
+
+        evaled_args = args.map do |arg|
+          interp, arg = interp.eval_without_macroexpand(arg, local_env)
+
+          arg
+        end
+
+        result = TailCallResult.new(interp, f, evaled_args)
+        throw(:tailcall, result)
       else
         raise EvalError, "Don't know how to eval #{node.inspect}"
       end
