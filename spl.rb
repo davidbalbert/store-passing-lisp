@@ -218,7 +218,7 @@ module SPL
     end
 
     def with_name(name)
-      self.class.new(arg_names, bodies, env, name)
+      NamedFunction.new(arg_names, bodies, env, name)
     end
 
     def name
@@ -270,6 +270,10 @@ module SPL
     end
   end
 
+  class NamedFunction < Function
+    undef with_name
+  end
+
   class AST
     class ASTError < SPLError; end;
 
@@ -295,27 +299,6 @@ module SPL
           instance_variable_set("@#{name}", AST.build(args.car))
           args = args.cdr
         end
-      end
-    end
-
-    def self.varargs(*arg_names)
-      attr_reader *arg_names
-
-      define_method :argc do
-        arg_names.size * -1
-      end
-
-      define_method :parse_args do |args|
-        positional_names = arg_names[1..-2]
-        rest_name = arg_names[-1]
-
-        positional_names.zip(args.to_a).each do |name, value|
-          instance_variable_set("@#{name}", AST.build(value))
-        end
-
-        rest_args = args.to_a.drop(positional_names.size).map { |arg| AST.build(arg) }
-
-        instance_varaible_set("@#{rest_name}", rest_args)
       end
     end
 
@@ -349,34 +332,79 @@ module SPL
 
     class Quote < AST
       name "quote"
-      args :value
+      attr_reader :value
+
+      def parse_args(args)
+        @value = args.car
+      end
+
+      def argc
+        1
+      end
     end
 
     class QuasiQuote < AST
       name "quasiquote"
-      args :value
-    end
+      attr_reader :value
 
-    class Unquote < AST
-      name "unquote"
-      args :value
+      def parse_args(args)
+        @value = args.car
+      end
+
+      def argc
+        1
+      end
     end
 
     class Lambda < AST
       name "lambda"
-      varargs :arglist, :bodies
+      attr_reader :arglist, :bodies
+
+      def parse_args(args)
+        unless args.car.respond_to?(:to_a)
+          raise TypeError, "#{args.car.inspect} cannot be coerced into Array"
+        end
+
+        @arglist = args.car.to_a
+        @bodies = args.cdr.map { |a| AST.build(a) }.to_a
+      end
+
+      def argc
+        -3
+      end
     end
 
     class DefMacro < AST
       name "defmacro"
-      varargs :name, :arglist, :bodies
+      attr_reader :var, :arglist, :bodies
+
+      def parse_args(args)
+        unless args.second.respond_to?(:to_a)
+          raise TypeError, "#{args.second.inspect} cannot be coerced into Array"
+        end
+
+        @var = args.first
+        @arglist = args.second.to_a
+        @bodies = args.drop(2).map { |a| AST.build(a) }.to_a
+      end
+
+      def argc
+        -4
+      end
     end
 
-    Call = Struct.new(:f, :args)
+    class Call
+      attr_reader :f, :args
+
+      def initialize(f, args)
+        @f = AST.build(f)
+        @args = args.to_a.map { |a| AST.build(a) }
+      end
+    end
 
     def self.build(expr)
       case expr
-      when Integer, String
+      when Integer, String, EmptyList
         expr
       when List
         args = expr.cdr
@@ -398,7 +426,7 @@ module SPL
         when "defmacro"
           DefMacro.new(args)
         else
-          Call.new(AST.build(expr.car), args.to_a.map { |arg| AST.build(arg) })
+          Call.new(expr.car, args)
         end
       else
         raise ASTError, "Don't know how to build an AST from a #{expr.class}"
@@ -506,108 +534,82 @@ module SPL
 
       ast = AST.build(expanded_expr)
 
-      interp.eval_without_macroexpand(expanded_expr, local_env)
+      interp.eval_without_macroexpand(ast, local_env)
     end
 
-    def eval_without_macroexpand(expr, local_env = NullEnvironment.instance)
-      case expr
+    def eval_without_macroexpand(node, local_env = NullEnvironment.instance)
+      interp = self
+
+      case node
       when String
-        value = get(expr, local_env)
+        value = get(node, local_env)
 
         if value.is_a? Macro
-          raise EvalError, "can't take value of macro `#{expr}'"
+          raise EvalError, "can't take value of macro `#{node}'"
         end
 
-        [self, value]
-      when Integer
-        [self, expr]
-      when EmptyList
-        [self, expr]
-      when List
-        interp = self
+        [interp, value]
+      when Integer, EmptyList
+        [interp, node]
+      when AST::Def
+        name = node.var
+        interp, value = interp.eval_without_macroexpand(node.value, local_env)
 
-        case expr.car
-        when "def"
-          check_special_form_args(expr, 2)
-          name = expr.second
-          interp, value = interp.eval_without_macroexpand(expr.third, local_env)
+        if value.respond_to?(:with_name)
+          value = value.with_name(name)
+        end
 
-          if value.respond_to?(:with_name)
-            value = value.with_name(name)
-          end
+        interp = interp.def(name, value)
 
-          interp = interp.def(name, value)
+        [interp, name]
+      when AST::SetBang
+        name = node.var
 
-          [interp, name]
-        when "set!"
-          check_special_form_args(expr, 2)
-          name = expr.second
+        interp, value = interp.eval_without_macroexpand(node.value, local_env)
 
-          interp, value = interp.eval_without_macroexpand(expr.third, local_env)
+        interp = interp.set!(name, value, local_env)
 
-          interp = interp.set!(name, value, local_env)
+        [interp, name]
+      when AST::If
+        interp, predicate = interp.eval_without_macroexpand(node.predicate, local_env)
 
-          [interp, name]
-        when "if"
-          check_special_form_args(expr, 3)
-
-          interp, predicate = interp.eval_without_macroexpand(expr.second, local_env)
-
-          if predicate != EmptyList.instance
-            interp.eval_without_macroexpand(expr.third, local_env)
-          else
-            interp.eval_without_macroexpand(expr.fourth, local_env)
-          end
-        when "quote"
-          check_special_form_args(expr, 1)
-
-          [interp, expr.second]
-        when "quasiquote"
-          check_special_form_args(expr, 1)
-
-          check_unquotes_for_errors(expr.second)
-          process_unquotes(expr.second, local_env)
-        when "lambda"
-          check_special_form_args(expr, 2..-1)
-          arg_names = expr.second
-
-          raise EvalError, "arglist #{arg_names} must be a list" unless arg_names.is_a?(List) || arg_names.is_a?(EmptyList)
-
-          bodies = expr.drop(2)
-
-          [interp, Function.new(arg_names, bodies, local_env)]
-        when "defmacro"
-          check_special_form_args(expr, 3..-1)
-
-          macro_name = expr.second
-          arg_names = expr.third
-
-          raise EvalError, "arglist #{arg_names} must be a list" unless arg_names.is_a?(List) || arg_names.is_a?(EmptyList)
-
-          bodies = expr.drop(3)
-
-          macro = Macro.new(arg_names, bodies, local_env, macro_name)
-
-          interp = interp.def(macro_name, macro)
-
-          [interp, macro_name]
-        when String, List
-          interp, val = interp.eval_without_macroexpand(expr.car, local_env)
-
-          interp.eval_without_macroexpand(List.new(val, expr.cdr), local_env)
-        when Builtin, Function
-          args = expr.rest
-
-          evaled_args = args.to_a.map do |arg|
-            interp, arg = interp.eval_without_macroexpand(arg, local_env)
-
-            arg
-          end
-
-          expr.car.call(interp, *evaled_args)
+        if predicate != EmptyList.instance
+          interp.eval_without_macroexpand(node.yes, local_env)
         else
-          raise EvalError, "#{expr.car} is not callable"
+          interp.eval_without_macroexpand(node.no, local_env)
         end
+      when AST::Quote
+        [interp, node.value]
+      when AST::QuasiQuote
+        check_unquotes_for_errors(node.value)
+        process_unquotes(node.value, local_env)
+      when AST::Lambda
+        [interp, Function.new(node.arglist, node.bodies, local_env)]
+      when AST::DefMacro
+        macro_name = node.var
+        macro = Macro.new(node.arglist, node.bodies, local_env, macro_name)
+
+        interp = interp.def(node.var, macro)
+
+        [interp, macro_name]
+      when AST::Call
+        interp, f = interp.eval_without_macroexpand(node.f, local_env)
+
+        args = node.args
+
+        evaled_args = args.map do |arg|
+          interp, arg = interp.eval_without_macroexpand(arg, local_env)
+
+          arg
+        end
+
+        if f.respond_to?(:call)
+          f.call(interp, *evaled_args)
+        else
+          raise EvalError, "#{f} is not callable"
+        end
+      else
+        raise EvalError, "Don't know how to eval #{node.inspect}"
       end
     end
 
@@ -717,23 +719,6 @@ module SPL
     def has_key?(name, local_env)
       local_env.has_key?(name) || global_env.has_key?(name)
     end
-
-    def check_special_form_args(expr, expected_argc)
-      argc = expr.size - 1
-
-      case expected_argc
-      when Integer
-        unless argc == expected_argc
-          raise EvalError, "`#{expr.car}' takes #{expected_argc} arguments"
-        end
-      when Range
-        if expected_argc.end == -1 && expected_argc.begin > argc
-          raise EvalError, "`#{expr.car}' needs at least #{expected_argc.begin} arguments"
-        elsif expected_argc.end != -1 && !expected_argc.include?(argc)
-          raise EvalError, "`#{expr.car}' takes #{expected_argc} arguments"
-        end
-      end
-    end
   end
 
   class List
@@ -788,6 +773,10 @@ module SPL
 
     def to_s
       "(#{to_a.join(" ")})"
+    end
+
+    def inspect
+      "#<SPL::List #{to_s}>"
     end
   end
 
@@ -849,6 +838,10 @@ module SPL
       end
 
       parse(s)
+    end
+
+    def read_one(s)
+      read_string(s).first
     end
 
   private
@@ -929,7 +922,7 @@ module SPL
         exit 0
       }
 
-      @interp, _ = eval(reader.read_string("(load 'kernel.lisp)").first)
+      @interp, _ = eval(reader.read_one("(load 'kernel.lisp)"))
 
       loop do
         print "spl> "
